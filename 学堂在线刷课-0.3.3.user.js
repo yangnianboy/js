@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         学堂在线刷课
 // @namespace    http://tampermonkey.net/
-// @version      0.3.3
+// @version      0.4.0
 // @description  该脚本可以完成学堂在线课程中的作业，视频以及图文
 // @match        https://www.xuetangx.com/*
 // @require      https://code.jquery.com/jquery-3.7.1.js
@@ -28,29 +28,35 @@
             const div = `
             <div id="main">
                 <div class="a-header">
-                    学堂在线助手
+                    <span class="a-header-text">学堂在线助手</span>
+                    <span class="a-collapse-btn" title="收起/展开面板">−</span>
                 </div>
-                <div class="a-actions">
-                    <button class="reading">刷课</button>
-                    <button class="collect">收集</button>
-                    <button class="random">找题</button>
-                    <button class="answer">答题</button>
-                    <button class="show">查看</button>
-                    <button class="clear running">清空</button>
-                </div>
-                <div class="a-table">
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>题目</th>
-                                <th>答案</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                        </tbody>
-                    </table>
+                <div class="a-body">
+                    <div class="a-actions">
+                        <button class="reading">刷课</button>
+                        <button class="collect">收集</button>
+                        <button class="random">破解(小号)</button>
+                        <button class="answer">答题</button>
+                        <button class="show">题库</button>
+                        <button class="clear running">清空</button>
+                        <button class="export-btn">导出</button>
+                        <button class="import-btn">导入</button>
+                    </div>
+                    <div class="a-table">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>题目</th>
+                                    <th>答案</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                            </tbody>
+                        </table>
+                    </div>
                 </div>
             </div>
+            <input type="file" id="import-file-input" accept=".json" style="display:none">
             `
             document.querySelector("body").insertAdjacentHTML('beforeend', div)
 
@@ -68,7 +74,7 @@
                 }
 
                 #main {
-                    position: absolute;
+                    position: fixed;
                     right: 24px;
                     top: 120px;
                     width: 240px;
@@ -78,16 +84,48 @@
                     border-radius: 6px;
                     background-color: rgb(255 255 255 / 92%);
                     box-shadow: 0 4px 16px rgb(0 0 0 / 12%);
+                    user-select: none;
                 }
 
                 #main .a-header {
-                    text-align: center;
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: center;
                     height: 30px;
                     font-size: 13px;
                     line-height: 30px;
                     background-color: rgb(46, 157, 103);
                     color: #fff;
                     font-weight: 600;
+                    cursor: move;
+                    padding: 0 8px;
+                }
+
+                #main .a-header-text {
+                    flex: 1;
+                    text-align: center;
+                    pointer-events: none;
+                }
+
+                #main .a-collapse-btn {
+                    cursor: pointer;
+                    font-size: 16px;
+                    width: 20px;
+                    height: 20px;
+                    line-height: 18px;
+                    text-align: center;
+                    border-radius: 3px;
+                    background-color: rgb(255 255 255 / 20%);
+                    flex-shrink: 0;
+                    pointer-events: auto;
+                }
+
+                #main .a-collapse-btn:hover {
+                    background-color: rgb(255 255 255 / 40%);
+                }
+
+                #main.collapsed .a-body {
+                    display: none;
                 }
 
                 #main .a-actions {
@@ -96,6 +134,14 @@
                     gap: 6px;
                     padding: 8px;
                     background-color: rgb(245 248 248 / 95%);
+                }
+
+                #main .a-table {
+                    display: none;
+                }
+
+                #main .a-table.visible {
+                    display: block;
                 }
 
                 #main .a-table tbody,
@@ -108,6 +154,15 @@
                     max-height: 160px;
                     overflow-y: auto;
                     -ms-overflow-style: none;
+                }
+
+                #main .a-table tbody::-webkit-scrollbar {
+                    width: 4px;
+                }
+
+                #main .a-table tbody::-webkit-scrollbar-thumb {
+                    background: #ccc;
+                    border-radius: 2px;
                 }
 
                 #main .a-table td,
@@ -133,7 +188,7 @@
                     border: 0;
                     border-radius: 4px;
                     color: #fff;
-                    font-size: 13px;
+                    font-size: 12px;
                     text-align: center;
                 }
 
@@ -143,6 +198,11 @@
                 #main .answer,
                 #main .show {
                     background-color: rgb(153, 58, 58);
+                }
+
+                #main .export-btn,
+                #main .import-btn {
+                    background-color: rgb(70, 130, 180);
                 }
 
                 #main .disabled {
@@ -201,12 +261,31 @@
             const MODE_LABELS = {
                 reading: '刷课',
                 collect: '收集',
-                random: '找题',
+                random: '破解(小号)',
                 answer: '答题'
             };
             const RUNNING_MODES = Object.keys(MODE_LABELS);
             let activeMode = null
             let timers = {}
+
+            // 题库表格展开状态
+            let tableExpanded = false
+
+            function updateTableVisibility (show) {
+                tableExpanded = show
+                let table = document.querySelector('#main .a-table')
+                let showBtn = document.querySelector('#main .show')
+                if (table) {
+                    if (show) {
+                        table.classList.add('visible')
+                    } else {
+                        table.classList.remove('visible')
+                    }
+                }
+                if (showBtn) {
+                    showBtn.textContent = show ? '收起' : '题库'
+                }
+            }
 
             function updateModeButtons () {
                 RUNNING_MODES.forEach(mode => {
@@ -220,7 +299,11 @@
                 panelButton('clear')
                     .prop('disabled', !!activeMode)
                     .toggleClass('disabled', !!activeMode)
-                panelButton('show')
+                // 导出导入按钮在运行模式下禁用
+                panelButton('export-btn')
+                    .prop('disabled', !!activeMode)
+                    .toggleClass('disabled', !!activeMode)
+                panelButton('import-btn')
                     .prop('disabled', !!activeMode)
                     .toggleClass('disabled', !!activeMode)
             }
@@ -232,6 +315,8 @@
                     activeMode = null
                 }
                 updateModeButtons()
+                // 停止模式时收起题库表格
+                updateTableVisibility(false)
             }
 
             function stopActiveMode () {
@@ -248,6 +333,12 @@
                 stopActiveMode()
                 activeMode = mode
                 updateModeButtons()
+                // 收集模式下展开题库，其他模式下收起题库
+                if (mode === 'collect') {
+                    updateTableVisibility(true)
+                } else {
+                    updateTableVisibility(false)
+                }
                 handler()
                 if (activeMode !== mode) return
                 timers[mode] = setInterval(handler, interval)
@@ -638,15 +729,12 @@
                     dispatchMouseup(getActionButton(next))
                 }, delay)
                 setTimeout(function () {
-                    collectCurrentQuestion(true)
-                }, delay + 1500)
-                setTimeout(function () {
                     goNextQuestionOrSection(getActionButton(next), total, curent)
                     randomBusy = false
                 }, delay + 2300)
             }
 
-            // 跳过视频/附件，遇到测验后随机提交答案
+            // 跳过视频/附件，遇到测验后随机提交答案（破解小号模式，不收集答案）
             function findNextQuiz () {
                 if ($('.answerList').length != 0) {
                     randomSubmitAnswer()
@@ -654,6 +742,140 @@
                 }
                 goNextSection()
             }
+
+            // ========== 导入导出功能 ==========
+
+            function exportQuestions () {
+                let data = localStorage.getItem(STORAGE_KEY) || '[]'
+                // 格式化JSON方便阅读
+                try {
+                    let parsed = JSON.parse(data)
+                    data = JSON.stringify(parsed, null, 2)
+                } catch (e) {}
+                let blob = new Blob([data], { type: 'application/json' })
+                let url = URL.createObjectURL(blob)
+                let a = document.createElement('a')
+                a.href = url
+                a.download = '学堂在线题库_' + new Date().toISOString().slice(0, 10) + '.json'
+                document.body.appendChild(a)
+                a.click()
+                document.body.removeChild(a)
+                URL.revokeObjectURL(url)
+            }
+
+            function importQuestions (file) {
+                let reader = new FileReader()
+                reader.onload = function (e) {
+                    try {
+                        let data = JSON.parse(e.target.result)
+                        if (!Array.isArray(data)) {
+                            alert('文件格式错误：题库文件应为一个JSON数组')
+                            return
+                        }
+                        let existing = getCache()
+                        let added = 0
+                        let skipped = 0
+                        data.forEach(function (item) {
+                            if (item && item.timu) {
+                                if (!existing.some(function (ex) { return ex && ex.timu === item.timu })) {
+                                    existing.push(item)
+                                    added++
+                                } else {
+                                    skipped++
+                                }
+                            }
+                        })
+                        setCache(existing)
+                        showCache()
+                        // 如果当前表格不可见，自动展开
+                        if (!tableExpanded) {
+                            updateTableVisibility(true)
+                        }
+                        alert('导入完成！\n新增 ' + added + ' 道题目\n跳过 ' + skipped + ' 道重复题目\n题库共 ' + existing.length + ' 道题目')
+                    } catch (err) {
+                        alert('文件解析失败：' + err.message)
+                    }
+                }
+                reader.readAsText(file)
+                // 重置file input以便可以重新导入同一文件
+                let fileInput = document.getElementById('import-file-input')
+                if (fileInput) fileInput.value = ''
+            }
+
+            // ========== 面板拖拽功能 ==========
+
+            function initDrag () {
+                let panel = document.getElementById('main')
+                let header = panel ? panel.querySelector('.a-header') : null
+                if (!panel || !header) return
+
+                let isDragging = false
+                let startX, startY, startLeft, startTop
+                let panelRect
+
+                header.addEventListener('mousedown', function (e) {
+                    // 如果点击的是折叠按钮，不触发拖拽
+                    if (e.target.classList.contains('a-collapse-btn')) return
+
+                    isDragging = true
+                    panelRect = panel.getBoundingClientRect()
+                    startX = e.clientX
+                    startY = e.clientY
+                    startLeft = panelRect.left
+                    startTop = panelRect.top
+
+                    // 从 right 定位切换到 left 定位
+                    panel.style.right = 'auto'
+                    panel.style.left = startLeft + 'px'
+                    panel.style.top = startTop + 'px'
+
+                    e.preventDefault()
+                })
+
+                document.addEventListener('mousemove', function (e) {
+                    if (!isDragging) return
+
+                    let dx = e.clientX - startX
+                    let dy = e.clientY - startY
+
+                    let newLeft = startLeft + dx
+                    let newTop = startTop + dy
+
+                    // 边界限制，防止面板被拖出屏幕
+                    let maxLeft = window.innerWidth - panel.offsetWidth - 10
+                    let maxTop = window.innerHeight - 40
+
+                    newLeft = Math.max(10, Math.min(newLeft, maxLeft))
+                    newTop = Math.max(10, Math.min(newTop, maxTop))
+
+                    panel.style.left = newLeft + 'px'
+                    panel.style.top = newTop + 'px'
+                })
+
+                document.addEventListener('mouseup', function () {
+                    if (isDragging) {
+                        isDragging = false
+                    }
+                })
+            }
+
+            // ========== 面板折叠功能 ==========
+
+            function initCollapse () {
+                let collapseBtn = document.querySelector('#main .a-collapse-btn')
+                let panel = document.getElementById('main')
+                if (!collapseBtn || !panel) return
+
+                collapseBtn.addEventListener('click', function (e) {
+                    e.stopPropagation()
+                    let collapsed = panel.classList.toggle('collapsed')
+                    collapseBtn.textContent = collapsed ? '+' : '−'
+                    collapseBtn.title = collapsed ? '展开面板' : '收起面板'
+                })
+            }
+
+            // ========== 点击事件 ==========
+
             // 添加点击事件
             panelButton('reading').click(function () {
                 toggleMode('reading', startClass, 2000)
@@ -673,8 +895,12 @@
                 toggleMode('answer', answerQuestions, 2000)
             })
 
+            // 题库按钮：切换表格显示
             panelButton('show').click(function () {
-                showCache()
+                if (!tableExpanded) {
+                    showCache()
+                }
+                updateTableVisibility(!tableExpanded)
             })
 
             panelButton('clear').click(function () {
@@ -682,4 +908,29 @@
                 clearTable()
                 rander('题库已清空', '')
             })
+
+            // 导出按钮
+            panelButton('export-btn').click(function () {
+                exportQuestions()
+            })
+
+            // 导入按钮
+            panelButton('import-btn').click(function () {
+                let fileInput = document.getElementById('import-file-input')
+                if (fileInput) fileInput.click()
+            })
+
+            // 文件选择监听
+            let fileInput = document.getElementById('import-file-input')
+            if (fileInput) {
+                fileInput.addEventListener('change', function () {
+                    if (this.files && this.files.length > 0) {
+                        importQuestions(this.files[0])
+                    }
+                })
+            }
+
+            // 初始化拖拽和折叠
+            initDrag()
+            initCollapse()
         })();
