@@ -287,17 +287,39 @@
             }
 
             function dispatchMouseup (even) {
-                if (even) {
-                    even.dispatchEvent(new Event(CLICK_EVENT))
-                }
+                if (!even || even.disabled) return
+                even.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }))
+                even.dispatchEvent(new MouseEvent(CLICK_EVENT, { bubbles: true, cancelable: true, view: window }))
+                even.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }))
+            }
+
+            function findElementByText (selectors, patterns) {
+                let elements = Array.from(document.querySelectorAll(selectors))
+                return elements.find(item => {
+                    let text = (item.innerText || item.textContent || '').trim()
+                    let title = (item.getAttribute('title') || '').trim()
+                    let aria = (item.getAttribute('aria-label') || '').trim()
+                    return patterns.some(pattern => pattern.test(text) || pattern.test(title) || pattern.test(aria))
+                })
+            }
+
+            function getActionButton (fallback) {
+                let btnCon = document.querySelector('.btnCon')
+                let buttons = btnCon ? btnCon.querySelectorAll('button') : []
+                return buttons[1] || fallback
             }
 
             function submitAndNext (next, delay) {
-                for (let i = 0; i < 2; i++) {
-                    setTimeout(function () {
-                        dispatchMouseup(next)
-                    }, delay * (i + 1));
-                }
+                let currentTimu = document.querySelector('.fuwenben')?.innerText
+                setTimeout(function () {
+                    dispatchMouseup(getActionButton(next))
+                }, delay)
+                setTimeout(function () {
+                    let latestTimu = document.querySelector('.fuwenben')?.innerText
+                    if (latestTimu === currentTimu) {
+                        dispatchMouseup(getActionButton(next))
+                    }
+                }, delay + 1200)
             }
 
             function goNextSectionIfNeeded (total, curent) {
@@ -369,11 +391,11 @@
             function automaticAnswers (tiku) {
                 if (!Array.isArray(tiku) || tiku.length === 0) {
                     console.log('题库为空，请先收集答案');
-                    return
+                    return false
                 }
                 let timuEven = document.querySelector('.fuwenben')
                 let btnCon = document.querySelector('.btnCon')
-                if (!timuEven || !btnCon) return
+                if (!timuEven || !btnCon) return false
                 let timu = timuEven.innerText;
                 let next = btnCon.querySelectorAll('button')[1];
                 let total = getQuestionCount('.total');
@@ -383,7 +405,7 @@
                 // 判断题型
                 if (anw == undefined) {
                     console.log('题库未匹配到当前题目');
-                    return
+                    return false
                 }
                 if (anw.type == 1) {
                     // 选择题
@@ -409,6 +431,7 @@
 
                 submitAndNext(next, delay)
                 goNextSectionIfNeeded(total, curent)
+                return true
             }
 
             // 开始刷课
@@ -428,14 +451,21 @@
             }
 
             // 自动答题
+            let answerBusy = false
+
             function answerQuestions () {
+                if (answerBusy) return
                 if ($('.answerList').length == 0) {
-                    console.log('当前页面不是测验');
-                    stopMode('answer')
+                    goNextSection()
                     return
                 }
                 let tiku = getCache()
-                automaticAnswers(tiku)
+                if (automaticAnswers(tiku)) {
+                    answerBusy = true
+                    setTimeout(function () {
+                        answerBusy = false
+                    }, 2800)
+                }
             }
 
             // 开始收集答案
@@ -498,21 +528,54 @@
                 dispatchMouseup(next);
             }
 
-            function getPrevQuestionButton () {
-                let buttons = Array.from(document.querySelectorAll('.btnCon button'))
-                return buttons.find(item => /上一|前/.test(item.innerText)) || buttons[0]
+            let collectPrepareStep = 'goLast'
+
+            function getAnswerCardButton () {
+                return findElementByText('.btnCon button, .showAllAnswer', [/查看答题卡/, /答题卡/])
             }
 
-            let collectPrepared = false
+            function getFirstQuestionInCard () {
+                return findElementByText('.courseActionAnswerSheet.answerSheet .answerList .answer .con', [/^1$/])
+            }
 
             function prepareCollectFromFirst () {
                 let curent = getQuestionIndex('.curent')
-                if (collectPrepared || curent <= 1) {
-                    collectPrepared = true
-                    return true
+                let total = getQuestionIndex('.total')
+                if (collectPrepareStep === 'waitFirst') {
+                    if (curent <= 1) {
+                        collectPrepareStep = 'ready'
+                        return true
+                    }
+                    return false
                 }
-                dispatchMouseup(getPrevQuestionButton())
-                return false
+                if (collectPrepareStep === 'goLast') {
+                    if (total && curent < total) {
+                        Next()
+                        return false
+                    }
+                    collectPrepareStep = 'openCard'
+                }
+                if (collectPrepareStep === 'openCard') {
+                    let cardButton = getAnswerCardButton()
+                    if (!cardButton) {
+                        console.log('未找到查看答题卡按钮')
+                        return false
+                    }
+                    cardButton.click()
+                    collectPrepareStep = 'chooseFirst'
+                    return false
+                }
+                if (collectPrepareStep === 'chooseFirst') {
+                    let firstQuestion = getFirstQuestionInCard()
+                    if (!firstQuestion) {
+                        console.log('未找到答题卡第1题')
+                        return false
+                    }
+                    firstQuestion.click()
+                    collectPrepareStep = total > 1 ? 'waitFirst' : 'ready'
+                    return false
+                }
+                return collectPrepareStep === 'ready'
             }
 
             function collectCurrentQuestion (silent = false) {
@@ -539,6 +602,10 @@
 
             function collectAnwers () {
                 // 学堂在线答案收集
+                if ($('.answerList').length == 0) {
+                    goNextSection()
+                    return
+                }
                 if (!prepareCollectFromFirst()) return
                 let total = getQuestionCount('.total');
                 let curent = getQuestionCount('.curent');
@@ -568,13 +635,13 @@
                     return
                 }
                 setTimeout(function () {
-                    dispatchMouseup(next)
+                    dispatchMouseup(getActionButton(next))
                 }, delay)
                 setTimeout(function () {
                     collectCurrentQuestion(true)
                 }, delay + 1500)
                 setTimeout(function () {
-                    goNextQuestionOrSection(next, total, curent)
+                    goNextQuestionOrSection(getActionButton(next), total, curent)
                     randomBusy = false
                 }, delay + 2300)
             }
@@ -594,7 +661,7 @@
 
             panelButton('collect').click(function () {
                 console.log(localStorage.getItem(STORAGE_KEY))
-                if (activeMode !== 'collect') collectPrepared = false
+                if (activeMode !== 'collect') collectPrepareStep = 'goLast'
                 toggleMode('collect', collectAnwers, 2000)
             })
 
