@@ -1,11 +1,11 @@
 // ==UserScript==
-// @name         学堂在线刷课
+// @name         学堂在线助手
 // @namespace    http://tampermonkey.net/
-// @version      0.4.0
+// @version      2.0.0
+// @author       yangnianboy
 // @description  该脚本可以完成学堂在线课程中的作业，视频以及图文
 // @match        https://www.xuetangx.com/*
 // @require      https://code.jquery.com/jquery-3.7.1.js
-// @icon         data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==
 // @grant        none
 // @license      GNU GPLv3
 // ==/UserScript==
