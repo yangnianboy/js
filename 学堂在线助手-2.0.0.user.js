@@ -452,8 +452,8 @@
                 let d = video.duration;
                 //不想关闭声音可以把此行代码删掉
                 soundClose();
-                //视频播放进度超过95%跳转下一节视频
-                if ((c / d) > 0.95) {
+                //视频播放进度超过99%跳转下一节视频
+                if ((c / d) > 0.99) {
                     $(".next").click();
                     console.log("跳转到下一节");
                     console.log("本节观看百分比" + c / d);
@@ -619,7 +619,7 @@
                 dispatchMouseup(next);
             }
 
-            let collectPrepareStep = 'goLast'
+            let collectPrepareStep = 'openCard'
 
             function getAnswerCardButton () {
                 return findElementByText('.btnCon button, .showAllAnswer', [/查看答题卡/, /答题卡/])
@@ -638,13 +638,6 @@
                         return true
                     }
                     return false
-                }
-                if (collectPrepareStep === 'goLast') {
-                    if (total && curent < total) {
-                        Next()
-                        return false
-                    }
-                    collectPrepareStep = 'openCard'
                 }
                 if (collectPrepareStep === 'openCard') {
                     let cardButton = getAnswerCardButton()
@@ -883,7 +876,7 @@
 
             panelButton('collect').click(function () {
                 console.log(localStorage.getItem(STORAGE_KEY))
-                if (activeMode !== 'collect') collectPrepareStep = 'goLast'
+                if (activeMode !== 'collect') collectPrepareStep = 'openCard'
                 toggleMode('collect', collectAnwers, 2000)
             })
 
