@@ -23,6 +23,15 @@
                 F: 5,
                 G: 6
             };
+            const ANSWER_SUBMIT_DELAY = 350;
+            const ANSWER_RETRY_DELAY = 700;
+            const ANSWER_BUSY_DELAY = 1400;
+            const ANSWER_SECTION_BUSY_DELAY = 2300;
+            const ANSWER_NAV_DELAY = 900;
+            const ANSWER_PROGRESS_CHECK_INTERVAL = 80;
+            const ANSWER_INTERVAL = 350;
+            const ANSWER_MAX_RETRIES_PER_QUESTION = 2;
+            const ANSWER_STUCK_COOLDOWN = 4500;
 
             // DOM添加
             const div = `
@@ -267,6 +276,8 @@
             const RUNNING_MODES = Object.keys(MODE_LABELS);
             let activeMode = null
             let timers = {}
+            let answerCacheRaw = null
+            let answerCacheMap = new Map()
 
             // 题库表格展开状态
             let tableExpanded = false
@@ -311,6 +322,9 @@
             function stopMode (mode) {
                 clearInterval(timers[mode])
                 timers[mode] = null
+                if (mode === 'answer') {
+                    releaseAnswerBusy()
+                }
                 if (activeMode === mode) {
                     activeMode = null
                 }
@@ -356,6 +370,31 @@
 
             function setCache (anwersLists) {
                 localStorage.setItem(STORAGE_KEY, JSON.stringify(anwersLists || []))
+                resetAnswerIndex()
+            }
+
+            function resetAnswerIndex () {
+                answerCacheRaw = null
+                answerCacheMap = new Map()
+            }
+
+            function getAnswerIndex () {
+                let raw = localStorage.getItem(STORAGE_KEY) || '[]'
+                if (raw === answerCacheRaw) return answerCacheMap
+                answerCacheRaw = raw
+                answerCacheMap = new Map()
+                try {
+                    let list = JSON.parse(raw)
+                    if (!Array.isArray(list)) return answerCacheMap
+                    list.forEach(item => {
+                        if (item && item.timu && !answerCacheMap.has(item.timu)) {
+                            answerCacheMap.set(item.timu, item)
+                        }
+                    })
+                } catch (err) {
+                    console.warn('题库索引构建失败，已按空题库处理', err)
+                }
+                return answerCacheMap
             }
 
             function getQuestionType () {
@@ -400,17 +439,47 @@
                 return buttons[1] || fallback
             }
 
-            function submitAndNext (next, delay) {
+            function setNativeValue (even, value) {
+                if (!even) return
+                let prototype = Object.getPrototypeOf(even)
+                let valueSetter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set
+                if (valueSetter) {
+                    valueSetter.call(even, value)
+                } else {
+                    even.value = value
+                }
+            }
+
+            function fillBlankAnswers (answers) {
+                let inputs = Array.from(document.querySelectorAll('.answerList textarea, .answerList input[type="text"], .answerList input:not([type])'))
+                    .filter(item => !item.disabled && !item.readOnly)
+                let anwers = Array.isArray(answers) ? answers : [answers]
+                anwers = anwers.filter(item => item !== undefined && item !== null && String(item).trim() !== '')
+                if (anwers.length === 0) anwers = ['答案']
+                if (inputs.length === 0) return false
+                inputs.forEach((input, index) => {
+                    let value = anwers[index] || anwers[anwers.length - 1] || '答案'
+                    input.focus()
+                    setNativeValue(input, value)
+                    input.dispatchEvent(new Event('input', { bubbles: true }))
+                    input.dispatchEvent(new Event('change', { bubbles: true }))
+                    input.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }))
+                })
+                return true
+            }
+
+            function submitAndNext (next, delay, retryDelay = ANSWER_RETRY_DELAY) {
+                clearAnswerSubmitTimers()
                 let currentTimu = document.querySelector('.fuwenben')?.innerText
-                setTimeout(function () {
+                answerSubmitTimers.push(setTimeout(function () {
                     dispatchMouseup(getActionButton(next))
-                }, delay)
-                setTimeout(function () {
+                }, delay))
+                answerSubmitTimers.push(setTimeout(function () {
                     let latestTimu = document.querySelector('.fuwenben')?.innerText
                     if (latestTimu === currentTimu) {
                         dispatchMouseup(getActionButton(next))
                     }
-                }, delay + 1200)
+                }, delay + retryDelay))
             }
 
             function goNextSectionIfNeeded (total, curent) {
@@ -431,6 +500,11 @@
                 } else {
                     dispatchMouseup(next)
                 }
+            }
+
+            function skipCurrentQuestion (next, total, curent) {
+                console.log('填空题未匹配到题库答案，已跳过当前题目');
+                goNextQuestionOrSection(getActionButton(next), total, curent)
             }
 
             // 创建对象
@@ -479,11 +553,7 @@
             }
 
             // 刷题
-            function automaticAnswers (tiku) {
-                if (!Array.isArray(tiku) || tiku.length === 0) {
-                    console.log('题库为空，请先收集答案');
-                    return false
-                }
+            function automaticAnswers (tiku, options = {}) {
                 let timuEven = document.querySelector('.fuwenben')
                 let btnCon = document.querySelector('.btnCon')
                 if (!timuEven || !btnCon) return false
@@ -491,11 +561,28 @@
                 let next = btnCon.querySelectorAll('button')[1];
                 let total = getQuestionCount('.total');
                 let curent = getQuestionCount('.curent');
-                let delay = 1000; // 延时1秒
-                let anw = tiku.find(item => item.timu == timu)
+                let delay = ANSWER_SUBMIT_DELAY;
+                let renderLog = options.renderLog !== false
+                let hasTiku = tiku instanceof Map ? tiku.size > 0 : Array.isArray(tiku) && tiku.length > 0
+                if (!hasTiku) {
+                    if (getQuestionType() == '填空题') {
+                        skipCurrentQuestion(next, total, curent)
+                        return true
+                    }
+                    console.log('题库为空，请先收集答案');
+                    return false
+                }
+                let anw = tiku instanceof Map ? tiku.get(timu) : tiku.find(item => item.timu == timu)
                 // 判断题型
                 if (anw == undefined) {
+                    if (getQuestionType() == '填空题') {
+                        skipCurrentQuestion(next, total, curent)
+                        return true
+                    }
                     console.log('题库未匹配到当前题目');
+                    return false
+                }
+                if (options.canAttempt && !options.canAttempt({ timu, curent, total })) {
                     return false
                 }
                 if (anw.type == 1) {
@@ -506,16 +593,22 @@
                         let anwersEven = anwersEvenList[num];
                         if (anwersEven) anwersEven.click()
                     });
-                    rander(anw.timu, anw.anwers)
+                    if (renderLog) rander(anw.timu, anw.anwers)
                 } else if (anw.type == 2) {
                     // 判断题
                     let anwersEven = document.querySelector('.answerList')?.querySelectorAll('span')[anw.anwers];
                     if (anwersEven) anwersEven.click()
-                    rander(anw.timu, anw.anwers)
-                } else {
+                    if (renderLog) rander(anw.timu, anw.anwers)
+                } else if (anw.type == 3) {
                     // 填空题
-                    rander(anw.timu, anw.anwers)
-                    $('.next').click()
+                    if (!fillBlankAnswers(anw.anwers)) {
+                        console.log('未找到填空题输入框');
+                        return false
+                    }
+                    if (renderLog) rander(anw.timu, anw.anwers)
+                } else {
+                    console.log('题型暂不支持');
+                    return false
                 }
 
 
@@ -543,19 +636,110 @@
 
             // 自动答题
             let answerBusy = false
+            let answerBusyTimer = null
+            let answerProgressTimer = null
+            let answerSubmitTimers = []
+            let answerAttemptKey = ''
+            let answerAttemptCount = 0
+            let answerCooldownUntil = 0
+
+            function getQuestionSnapshot () {
+                return {
+                    timu: document.querySelector('.fuwenben')?.innerText || '',
+                    curent: getQuestionCount('.curent'),
+                    total: getQuestionCount('.total')
+                }
+            }
+
+            function hasQuestionProgressed (snapshot) {
+                if ($('.answerList').length == 0) return true
+                let timu = document.querySelector('.fuwenben')?.innerText || ''
+                let curent = getQuestionCount('.curent')
+                let total = getQuestionCount('.total')
+                return Boolean(
+                    (snapshot.timu && timu && snapshot.timu !== timu) ||
+                    (snapshot.curent && curent && snapshot.curent !== curent) ||
+                    (snapshot.total && total && snapshot.total !== total)
+                )
+            }
+
+            function clearAnswerBusyTimers () {
+                clearTimeout(answerBusyTimer)
+                clearInterval(answerProgressTimer)
+                answerBusyTimer = null
+                answerProgressTimer = null
+            }
+
+            function clearAnswerSubmitTimers () {
+                answerSubmitTimers.forEach(timer => clearTimeout(timer))
+                answerSubmitTimers = []
+            }
+
+            function releaseAnswerBusy () {
+                clearAnswerBusyTimers()
+                clearAnswerSubmitTimers()
+                answerBusy = false
+            }
+
+            function lockAnswerFor (delay) {
+                clearAnswerBusyTimers()
+                answerBusy = true
+                answerBusyTimer = setTimeout(releaseAnswerBusy, delay)
+            }
+
+            function lockAnswerUntilProgress (snapshot) {
+                let maxDelay = snapshot.total == snapshot.curent ? ANSWER_SECTION_BUSY_DELAY : ANSWER_BUSY_DELAY
+                let start = Date.now()
+                clearAnswerBusyTimers()
+                answerBusy = true
+                answerProgressTimer = setInterval(function () {
+                    if (activeMode !== 'answer' || hasQuestionProgressed(snapshot) || Date.now() - start >= maxDelay) {
+                        releaseAnswerBusy()
+                    }
+                }, ANSWER_PROGRESS_CHECK_INTERVAL)
+            }
+
+            function getAnswerAttemptKey (snapshot) {
+                return [snapshot.curent, snapshot.total, snapshot.timu].join('|')
+            }
+
+            function canAttemptAnswer (snapshot) {
+                let key = getAnswerAttemptKey(snapshot)
+                let now = Date.now()
+                if (answerAttemptKey !== key) {
+                    answerAttemptKey = key
+                    answerAttemptCount = 0
+                    answerCooldownUntil = 0
+                }
+                if (answerAttemptCount >= ANSWER_MAX_RETRIES_PER_QUESTION) {
+                    if (!answerCooldownUntil) {
+                        answerCooldownUntil = now + ANSWER_STUCK_COOLDOWN
+                        console.log('当前题提交后页面无响应，暂停重试')
+                    }
+                    if (now < answerCooldownUntil) return false
+                    answerAttemptCount = 0
+                    answerCooldownUntil = 0
+                }
+                answerAttemptCount++
+                return true
+            }
 
             function answerQuestions () {
                 if (answerBusy) return
                 if ($('.answerList').length == 0) {
                     goNextSection()
+                    lockAnswerFor(ANSWER_NAV_DELAY)
                     return
                 }
-                let tiku = getCache()
-                if (automaticAnswers(tiku)) {
-                    answerBusy = true
-                    setTimeout(function () {
-                        answerBusy = false
-                    }, 2800)
+                let snapshot = getQuestionSnapshot()
+                let tiku = getAnswerIndex()
+                if (automaticAnswers(tiku, {
+                    renderLog: false,
+                    canAttempt: function () {
+                        return canAttemptAnswer(snapshot)
+                    }
+                })) {
+                    lockAnswerUntilProgress(snapshot)
                 }
             }
 
@@ -620,22 +804,57 @@
             }
 
             let collectPrepareStep = 'openCard'
+            let collectChangingSection = false
+
+            function resetCollectPrepare () {
+                collectPrepareStep = 'openCard'
+            }
 
             function getAnswerCardButton () {
                 return findElementByText('.btnCon button, .showAllAnswer', [/查看答题卡/, /答题卡/])
             }
 
             function getFirstQuestionInCard () {
-                return findElementByText('.courseActionAnswerSheet.answerSheet .answerList .answer .con', [/^1$/])
+                return findElementByText(
+                    '.courseActionAnswerSheet.answerSheet .answerList .answer .con, .courseActionAnswerSheet.answerSheet .answerList .answer',
+                    [/^1$/]
+                )
+            }
+
+            function clickQuestionInCard (questionEven) {
+                if (!questionEven) return false
+                let con = questionEven.matches('.con') ? questionEven : questionEven.querySelector('.con')
+                let answer = questionEven.closest('.answer') || questionEven
+                if (con) {
+                    con.scrollIntoView({ block: 'center', inline: 'center' })
+                    dispatchMouseup(con)
+                }
+                if (answer && answer !== con) {
+                    dispatchMouseup(answer)
+                }
+                return true
+            }
+
+            function isQuizPage () {
+                return !!(
+                    document.querySelector('.question') ||
+                    document.querySelector('.btnCon') ||
+                    document.querySelector('.courseActionAnswerSheet.answerSheet') ||
+                    getAnswerCardButton()
+                )
             }
 
             function prepareCollectFromFirst () {
                 let curent = getQuestionIndex('.curent')
                 let total = getQuestionIndex('.total')
                 if (collectPrepareStep === 'waitFirst') {
-                    if (curent <= 1) {
+                    if (curent === 1) {
                         collectPrepareStep = 'ready'
                         return true
+                    }
+                    let firstQuestion = getFirstQuestionInCard()
+                    if (clickQuestionInCard(firstQuestion)) {
+                        console.log('重试点击答题卡第1题')
                     }
                     return false
                 }
@@ -645,7 +864,7 @@
                         console.log('未找到查看答题卡按钮')
                         return false
                     }
-                    cardButton.click()
+                    dispatchMouseup(cardButton)
                     collectPrepareStep = 'chooseFirst'
                     return false
                 }
@@ -655,11 +874,21 @@
                         console.log('未找到答题卡第1题')
                         return false
                     }
-                    firstQuestion.click()
-                    collectPrepareStep = total > 1 ? 'waitFirst' : 'ready'
+                    clickQuestionInCard(firstQuestion)
+                    collectPrepareStep = 'waitFirst'
                     return false
                 }
                 return collectPrepareStep === 'ready'
+            }
+
+            function goNextSectionAfterCollect () {
+                if (collectChangingSection) return
+                collectChangingSection = true
+                resetCollectPrepare()
+                setTimeout(function () {
+                    goNextSection()
+                    collectChangingSection = false
+                }, 1500)
             }
 
             function collectCurrentQuestion (silent = false) {
@@ -686,15 +915,24 @@
 
             function collectAnwers () {
                 // 学堂在线答案收集
-                if ($('.answerList').length == 0) {
+                if (collectChangingSection) return
+                if (!isQuizPage()) {
+                    resetCollectPrepare()
                     goNextSection()
                     return
                 }
                 if (!prepareCollectFromFirst()) return
+                if ($('.answerList').length == 0 || !document.querySelector('.fuwenben')) {
+                    console.log('等待第1题加载')
+                    return
+                }
                 let total = getQuestionCount('.total');
                 let curent = getQuestionCount('.curent');
                 collectCurrentQuestion()
-                goNextSectionIfNeeded(total, curent)
+                if (total == curent) {
+                    goNextSectionAfterCollect()
+                    return
+                }
                 Next(); // 跳转下一题
             }
 
@@ -713,6 +951,13 @@
                 if (type == '单选题' || type == '多选题' || type == '判断题') {
                     let anwersEven = document.querySelector('.answerList')?.querySelectorAll('span')[0];
                     if (anwersEven) anwersEven.click()
+                } else if (type == '填空题') {
+                    if (!fillBlankAnswers('答案')) {
+                        console.log('填空题已提交或未找到可写输入框，跳过当前题目');
+                        goNextQuestionOrSection(getActionButton(next), total, curent)
+                        randomBusy = false
+                        return
+                    }
                 } else {
                     document.querySelector('.next')?.click()
                     randomBusy = false
@@ -885,7 +1130,7 @@
             })
 
             panelButton('answer').click(function () {
-                toggleMode('answer', answerQuestions, 2000)
+                toggleMode('answer', answerQuestions, ANSWER_INTERVAL)
             })
 
             // 题库按钮：切换表格显示
